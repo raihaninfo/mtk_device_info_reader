@@ -1,108 +1,145 @@
 package main
 
 import (
-    "fmt"
-    "log"
-    "time"
+	"fmt"
+	"time"
 
-    "fyne.io/fyne/v2/app"
-    "fyne.io/fyne/v2/container"
-    "fyne.io/fyne/v2/widget"
-    "fyne.io/fyne/v2"
-    "github.com/tarm/serial" // Use only this serial package
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+	"github.com/tarm/serial"
 )
 
-// GetAvailablePorts lists all available COM ports on the system
-func GetAvailablePorts() ([]string, error) {
-    // Hardcoding common COM port names for simplicity (adjust for your platform)
-    return []string{"COM1", "COM2", "COM3", "COM4"}, nil
+// GetAvailablePorts detects COM ports by scanning common port names
+func GetAvailablePorts() []string {
+	ports := []string{}
+	// Scan through a range of typical COM port names
+	for i := 1; i <= 256; i++ {
+		port := fmt.Sprintf("COM%d", i)
+		_, err := serial.OpenPort(&serial.Config{Name: port, Baud: 9600})
+		if err == nil {
+			ports = append(ports, port)
+		}
+	}
+	return ports
+}
+
+// DetectBaudRate tries common baud rates and returns the first successful one
+func DetectBaudRate(portName string) (int, error) {
+	commonBaudRates := []int{
+		9600, 14400, 19200, 38400, 57600, 115200, 128000, 256000,
+	}
+
+	for _, baud := range commonBaudRates {
+		config := &serial.Config{
+			Name:        portName,
+			Baud:        baud,
+			ReadTimeout: time.Second * 2,
+		}
+
+		port, err := serial.OpenPort(config)
+		if err != nil {
+			continue // Try the next baud rate
+		}
+		defer port.Close()
+
+		// Send a test command (modify according to your device's protocol)
+		_, err = port.Write([]byte("AT\r")) // Example AT command for testing
+		if err != nil {
+			continue
+		}
+
+		buf := make([]byte, 128)
+		_, err = port.Read(buf)
+		if err == nil {
+			// Successfully communicated with the device
+			return baud, nil
+		}
+	}
+
+	return 0, fmt.Errorf("could not detect baud rate")
 }
 
 func readDeviceInfo(portName string, baudRate int) (string, error) {
-    config := &serial.Config{
-        Name:        portName,
-        Baud:        baudRate,
-        ReadTimeout: time.Second * 2,
-    }
+	config := &serial.Config{
+		Name:        portName,
+		Baud:        baudRate,
+		ReadTimeout: time.Second * 2,
+	}
 
-    port, err := serial.OpenPort(config)
-    if err != nil {
-        return "", err
-    }
-    defer port.Close()
+	port, err := serial.OpenPort(config)
+	if err != nil {
+		return "", err
+	}
+	defer port.Close()
 
-    // Send an example command to the device (adjust based on your device's protocol)
-    _, err = port.Write([]byte("AT+DEVICEINFO\r")) // Example AT command, modify if necessary
-    if err != nil {
-        return "", err
-    }
+	// Send an example command to the device (adjust based on your device's protocol)
+	_, err = port.Write([]byte("AT+DEVICEINFO\r")) // Example AT command, modify if necessary
+	if err != nil {
+		return "", err
+	}
 
-    buf := make([]byte, 128)
-    n, err := port.Read(buf)
-    if err != nil {
-        return "", err
-    }
+	buf := make([]byte, 128)
+	n, err := port.Read(buf)
+	if err != nil {
+		return "", err
+	}
 
-    return string(buf[:n]), nil
+	return string(buf[:n]), nil
 }
 
 func main() {
-    a := app.New()
-    w := a.NewWindow("MKT Device Info Reader")
+	a := app.New()
+	w := a.NewWindow("MKT Device Info Reader")
 
-    // Get all available COM ports
-    availablePorts, err := GetAvailablePorts()
-    if err != nil {
-        log.Fatalf("Error fetching COM ports: %v", err)
-    }
+	// Automatically detect available COM ports
+	availablePorts := GetAvailablePorts()
 
-    // Define common baud rates
-    baudRates := []string{
-        "9600", "14400", "19200", "38400", "57600", "115200", "128000", "256000",
-    }
+	// if len(availablePorts) == 0 {
+	//     log.Println("No COM ports detected")
+	//     return
+	// }
 
-    // Dropdowns for COM ports and baud rates
-    portDropdown := widget.NewSelect(availablePorts, func(value string) {})
-    portDropdown.PlaceHolder = "Select COM port"
+	// GUI Elements
+	portDropdown := widget.NewSelect(availablePorts, func(value string) {})
+	portDropdown.PlaceHolder = "Select COM port"
 
-    baudDropdown := widget.NewSelect(baudRates, func(value string) {})
-    baudDropdown.PlaceHolder = "Select Baud Rate"
+	infoLabel := widget.NewLabel("Device Info will be displayed here")
 
-    infoLabel := widget.NewLabel("Device Info will be displayed here")
+	readButton := widget.NewButton("Read Info", func() {
+		port := portDropdown.Selected
 
-    readButton := widget.NewButton("Read Info", func() {
-        port := portDropdown.Selected
-        baudRate := baudDropdown.Selected
+		if port == "" {
+			infoLabel.SetText("Please select a COM port")
+			return
+		}
 
-        if port == "" || baudRate == "" {
-            infoLabel.SetText("Please select both COM port and Baud Rate")
-            return
-        }
+		// Automatically detect baud rate
+		baudRate, err := DetectBaudRate(port)
+		if err != nil {
+			infoLabel.SetText("Error detecting baud rate: " + err.Error())
+			return
+		}
 
-        // Convert baud rate from string to int
-        var baud int
-        fmt.Sscanf(baudRate, "%d", &baud)
+		// Read device information
+		info, err := readDeviceInfo(port, baudRate)
+		if err != nil {
+			infoLabel.SetText("Error: " + err.Error())
+		} else {
+			infoLabel.SetText("Device Info: " + info)
+		}
+	})
 
-        // Read device information
-        info, err := readDeviceInfo(port, baud)
-        if err != nil {
-            infoLabel.SetText("Error: " + err.Error())
-        } else {
-            infoLabel.SetText("Device Info: " + info)
-        }
-    })
+	content := container.NewVBox(
+		widget.NewLabel("MediaTek (MKT) Device Info Tool"),
+		widget.NewLabel("Detected COM Ports:"),
+		portDropdown,
+		readButton,
+		infoLabel,
+	)
 
-    content := container.NewVBox(
-        widget.NewLabel("MediaTek (MKT) Device Info Tool"),
-        widget.NewLabel("Select COM Port:"),
-        portDropdown,
-        widget.NewLabel("Select Baud Rate:"),
-        baudDropdown,
-        readButton,
-        infoLabel,
-    )
-
-    w.SetContent(content)
-    w.Resize(fyne.NewSize(400, 300))
-    w.ShowAndRun()
+	w.SetContent(content)
+	w.Resize(fyne.NewSize(400, 300))
+	w.ShowAndRun()
 }
